@@ -1,0 +1,6 @@
+{
+  "title": "Export coordonnées → CAO",
+  "url": "https://pahttam.github.io/extension/index.html",
+  "description": "Récupère les points 'Point unique' de la maquette et les envoie vers l'application locale (format Point X Y Z, conversion mm -> m automatique).",
+  "extensionType": ["3dviewer"]
+}
