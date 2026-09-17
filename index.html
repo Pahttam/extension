@@ -24,10 +24,18 @@
   </label>
 
   <button id="btnFetch">1. Récupérer les points de la maquette</button><br/>
-  <button id="btnSend" disabled>2. Envoyer vers l'application locale</button>
-  <button id="btnCopy" disabled>Copier (solution de secours)</button>
+  <button id="btnCopy" disabled>2. Copier les points (méthode recommandée)</button>
+  <button id="btnSend" disabled>Tentative d'envoi automatique (optionnel)</button>
 
   <div id="status">Connexion à Trimble Connect...</div>
+
+  <p style="margin:8px 0 2px 0;">
+    Après l'étape 1 : clique "2. Copier les points", puis dans l'application Python
+    clique "Coller depuis le presse-papiers". Si "Copier" échoue aussi (rare),
+    clique directement dans la zone ci-dessous et fais Ctrl+C (Cmd+C sur Mac).
+  </p>
+  <textarea id="manualCopy" readonly rows="6" style="width:100%; font-family:monospace; box-sizing:border-box;"
+    onclick="this.select()" placeholder="Apparaît ici après l'étape 1."></textarea>
 
   <table id="preview">
     <thead><tr><th>#</th><th>X (mm)</th><th>Y (mm)</th><th>Z (mm)</th></tr></thead>
@@ -46,6 +54,17 @@
 // Réf. : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/MarkupPick.html
 // -> La conversion mm -> m est donc systématique (division par 1000),
 //    aucune détection heuristique de l'unité n'est nécessaire ici.
+//
+// À PROPOS DE L'ENVOI AUTOMATIQUE (bouton "Tentative d'envoi automatique") :
+// Depuis Chrome/Edge 142 (fin 2025), la fonctionnalité "Local Network Access"
+// exige qu'une iframe tierce (ce qu'est cette extension, chargée par Trimble
+// Connect) porte l'attribut allow="local-network-access" pour pouvoir même
+// déclencher la demande d'autorisation d'accès à localhost. Cet attribut est
+// posé par le code de Trimble Connect, pas par cette extension : sans mise à
+// jour de leur côté, l'envoi automatique reste bloqué sur Chrome/Edge récents.
+// Réf. : https://developer.chrome.com/blog/local-network-access
+// -> Le copier-coller (bouton "2. Copier les points" ou la zone de texte
+//    manuelle) est donc la méthode fiable, pas un simple secours.
 // -----------------------------------------------------------------------
 
 let API = null;
@@ -83,12 +102,13 @@ btnFetch.onclick = async () => {
       z_mm: m.start.positionZ,
     }));
     renderPreview();
+    updateManualCopyBox();
     if (currentPoints.length === 0) {
       setStatus("Aucun point trouvé.\nUtilise l'outil \"Point unique\" dans le viewer, puis réessaie.");
       btnSend.disabled = true;
       btnCopy.disabled = true;
     } else {
-      setStatus(currentPoints.length + " point(s) trouvé(s). Prêt à envoyer.");
+      setStatus(currentPoints.length + " point(s) trouvé(s). Utilise \"2. Copier les points\".");
       btnSend.disabled = false;
       btnCopy.disabled = false;
     }
@@ -106,6 +126,22 @@ function renderPreview() {
   });
 }
 
+function formatLinesInMeters() {
+  // Conversion mm -> m déterministe (voir commentaire en tête de fichier).
+  return currentPoints.map((p, i) => {
+    const x = (p.x_mm / 1000).toFixed(3);
+    const y = (p.y_mm / 1000).toFixed(3);
+    const z = (p.z_mm / 1000).toFixed(3);
+    return `P${i + 1} ${x} ${y} ${z}`;
+  }).join('\n');
+}
+
+function updateManualCopyBox() {
+  // Solution de secours garantie : ne dépend d'aucune permission (fetch, clipboard API...)
+  // qui pourrait être restreinte par la politique de sécurité de la page hôte (Trimble Connect).
+  document.getElementById('manualCopy').value = formatLinesInMeters();
+}
+
 btnSend.onclick = async () => {
   const port = document.getElementById('port').value || 8756;
   try {
@@ -117,26 +153,23 @@ btnSend.onclick = async () => {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     setStatus(currentPoints.length + " point(s) envoyé(s) à l'application locale.\nVérifie la fenêtre Python.");
   } catch (e) {
-    setStatus("Échec de l'envoi automatique (" + e.message + ").\n" +
-      "Vérifie que l'application Python est bien lancée, ou utilise le bouton \"Copier\" ci-dessus " +
-      "puis le bouton \"Coller depuis le presse-papiers\" dans l'application.");
+    setStatus("Envoi automatique indisponible (" + e.message + ").\n" +
+      "C'est attendu sur Chrome/Edge récents (restriction \"Local Network Access\" du navigateur, " +
+      "hors de notre contrôle) — utilise \"2. Copier les points\" ci-dessus, c'est la méthode normale.");
   }
 };
 
 btnCopy.onclick = async () => {
   // Solution de secours : copie déjà convertie en mètres, prête à coller dans l'application.
-  const lines = currentPoints.map((p, i) => {
-    const x = (p.x_mm / 1000).toFixed(3);
-    const y = (p.y_mm / 1000).toFixed(3);
-    const z = (p.z_mm / 1000).toFixed(3);
-    return `P${i + 1} ${x} ${y} ${z}`;
-  }).join('\n');
+  const lines = formatLinesInMeters();
   try {
     await navigator.clipboard.writeText(lines);
     setStatus("Texte copié dans le presse-papiers (" + currentPoints.length + " point(s), déjà en mètres).\n" +
       "Colle-le dans l'application Python (bouton \"Coller depuis le presse-papiers\").");
   } catch (e) {
-    setStatus("Impossible de copier automatiquement : " + e.message);
+    setStatus("Copie automatique impossible (" + e.message + ").\n" +
+      "Utilise la zone de texte ci-dessus : clique dedans puis Ctrl+C (Cmd+C sur Mac) — " +
+      "cette méthode fonctionne toujours, quelle que soit la politique de sécurité de la page.");
   }
 };
 
