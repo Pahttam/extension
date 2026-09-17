@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<title>Export coordonnées → CAO</title>
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<style>
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; font-size: 13px; padding: 10px; color: #222; }
+  h3 { margin: 0 0 8px 0; }
+  button { margin: 4px 4px 4px 0; padding: 6px 10px; cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.5; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 12px; }
+  td, th { border: 1px solid #ccc; padding: 2px 6px; text-align: right; }
+  #status { margin-top: 10px; white-space: pre-wrap; padding: 6px; background: #f4f4f4; border-radius: 4px; }
+  label { display: block; margin-bottom: 8px; }
+  input[type=number] { width: 70px; }
+</style>
+</head>
+<body>
+  <h3>Export des points → CAO</h3>
+
+  <label>Port local de l'application Python :
+    <input id="port" type="number" value="8756" />
+  </label>
+
+  <button id="btnFetch">1. Récupérer les points de la maquette</button><br/>
+  <button id="btnSend" disabled>2. Envoyer vers l'application locale</button>
+  <button id="btnCopy" disabled>Copier (solution de secours)</button>
+
+  <div id="status">Connexion à Trimble Connect...</div>
+
+  <table id="preview">
+    <thead><tr><th>#</th><th>X (mm)</th><th>Y (mm)</th><th>Z (mm)</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+<script>
+// -----------------------------------------------------------------------
+// Extension Trimble Connect 3D Viewer
+// Utilise la Trimble Connect Workspace API (officielle) :
+// https://components.connect.trimble.com/trimble-connect-workspace-api/index.html
+//
+// IMPORTANT (documenté officiellement) :
+// MarkupPick.positionX / positionY / positionZ sont TOUJOURS exprimées
+// en millimètres, quel que soit l'affichage choisi dans le projet Trimble Connect.
+// Réf. : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/MarkupPick.html
+// -> La conversion mm -> m est donc systématique (division par 1000),
+//    aucune détection heuristique de l'unité n'est nécessaire ici.
+// -----------------------------------------------------------------------
+
+let API = null;
+let currentPoints = []; // [{id, x_mm, y_mm, z_mm}]
+
+const statusEl = document.getElementById('status');
+const btnFetch = document.getElementById('btnFetch');
+const btnSend = document.getElementById('btnSend');
+const btnCopy = document.getElementById('btnCopy');
+const previewBody = document.querySelector('#preview tbody');
+
+function setStatus(msg) {
+  statusEl.textContent = msg;
+}
+
+async function init() {
+  try {
+    API = await TrimbleConnectWorkspace.connect(window.parent, (event, data) => {
+      // Les événements du viewer pourraient être journalisés ici si besoin.
+    });
+    setStatus("Connecté à Trimble Connect.\nPlace tes points avec l'outil \"Point unique\", puis clique sur 1.");
+  } catch (e) {
+    setStatus("Erreur de connexion à Trimble Connect : " + e.message);
+  }
+}
+
+btnFetch.onclick = async () => {
+  if (!API) { setStatus("API non connectée."); return; }
+  try {
+    const markups = await API.markup.getSinglePointMarkups();
+    currentPoints = markups.map(m => ({
+      id: m.id,
+      x_mm: m.start.positionX,
+      y_mm: m.start.positionY,
+      z_mm: m.start.positionZ,
+    }));
+    renderPreview();
+    if (currentPoints.length === 0) {
+      setStatus("Aucun point trouvé.\nUtilise l'outil \"Point unique\" dans le viewer, puis réessaie.");
+      btnSend.disabled = true;
+      btnCopy.disabled = true;
+    } else {
+      setStatus(currentPoints.length + " point(s) trouvé(s). Prêt à envoyer.");
+      btnSend.disabled = false;
+      btnCopy.disabled = false;
+    }
+  } catch (e) {
+    setStatus("Erreur lors de la lecture des points : " + e.message);
+  }
+};
+
+function renderPreview() {
+  previewBody.innerHTML = '';
+  currentPoints.forEach((p, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i + 1}</td><td>${p.x_mm.toFixed(1)}</td><td>${p.y_mm.toFixed(1)}</td><td>${p.z_mm.toFixed(1)}</td>`;
+    previewBody.appendChild(tr);
+  });
+}
+
+btnSend.onclick = async () => {
+  const port = document.getElementById('port').value || 8756;
+  try {
+    const resp = await fetch(`http://localhost:${port}/points`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: currentPoints, unit: 'mm', source: 'trimble-connect-extension' })
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    setStatus(currentPoints.length + " point(s) envoyé(s) à l'application locale.\nVérifie la fenêtre Python.");
+  } catch (e) {
+    setStatus("Échec de l'envoi automatique (" + e.message + ").\n" +
+      "Vérifie que l'application Python est bien lancée, ou utilise le bouton \"Copier\" ci-dessus " +
+      "puis le bouton \"Coller depuis le presse-papiers\" dans l'application.");
+  }
+};
+
+btnCopy.onclick = async () => {
+  // Solution de secours : copie déjà convertie en mètres, prête à coller dans l'application.
+  const lines = currentPoints.map((p, i) => {
+    const x = (p.x_mm / 1000).toFixed(3);
+    const y = (p.y_mm / 1000).toFixed(3);
+    const z = (p.z_mm / 1000).toFixed(3);
+    return `P${i + 1} ${x} ${y} ${z}`;
+  }).join('\n');
+  try {
+    await navigator.clipboard.writeText(lines);
+    setStatus("Texte copié dans le presse-papiers (" + currentPoints.length + " point(s), déjà en mètres).\n" +
+      "Colle-le dans l'application Python (bouton \"Coller depuis le presse-papiers\").");
+  } catch (e) {
+    setStatus("Impossible de copier automatiquement : " + e.message);
+  }
+};
+
+init();
+</script>
+</body>
+</html>
