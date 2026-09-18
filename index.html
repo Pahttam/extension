@@ -303,6 +303,14 @@ btnClearTrimble.onclick = async () => {
 };
 
 const btnTestSelection = document.getElementById('btnTestSelection');
+
+function stringifySafe(obj) {
+  // JSON.stringify plante nativement sur un BigInt ("Do not know how to
+  // serialize a BigInt") : on le convertit en chaîne lisible pour le
+  // diagnostic, sans changer les autres types de valeurs.
+  return JSON.stringify(obj, (key, value) => (typeof value === 'bigint' ? value.toString() + 'n' : value), 2);
+}
+
 btnTestSelection.onclick = async () => {
   // Bouton de diagnostic TEMPORAIRE : on affiche le JSON brut plutôt que de
   // présumer la forme exacte de getSelection(), pour valider ensemble ce que
@@ -313,7 +321,7 @@ btnTestSelection.onclick = async () => {
   let output = '';
   try {
     const selection = await API.viewer.getSelection();
-    output += "=== getSelection() ===\n" + JSON.stringify(selection, null, 2) + "\n\n";
+    output += "=== getSelection() ===\n" + stringifySafe(selection) + "\n\n";
 
     // On tente d'exploiter la sélection pour interroger les propriétés, sans
     // présumer à 100% de sa forme exacte (le JSON brut ci-dessus fait foi).
@@ -324,10 +332,10 @@ btnTestSelection.onclick = async () => {
       if (!modelId || !ids || ids.length === 0) continue;
 
       const props = await API.viewer.getObjectProperties(modelId, ids);
-      output += `=== getObjectProperties("${modelId}") ===\n` + JSON.stringify(props, null, 2) + "\n\n";
+      output += `=== getObjectProperties("${modelId}") ===\n` + stringifySafe(props) + "\n\n";
 
       const boxes = await API.viewer.getObjectBoundingBoxes(modelId, ids);
-      output += `=== getObjectBoundingBoxes("${modelId}") ===\n` + JSON.stringify(boxes, null, 2) + "\n\n";
+      output += `=== getObjectBoundingBoxes("${modelId}") ===\n` + stringifySafe(boxes) + "\n\n";
     }
 
     if (!output.includes('getObjectProperties')) {
