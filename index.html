@@ -27,6 +27,13 @@
   <br/>
   <button id="btnClearTrimble" disabled>Vider les points sélectionnés dans Trimble Connect</button>
 
+  <hr/>
+  <p><strong>Zone de test temporaire</strong> — sélectionne un élément (poteau, poutre...)
+    directement dans le viewer 3D (clic normal, pas l'outil "Point unique"), puis clique ici :</p>
+  <button id="btnTestSelection">Tester : inspecter la sélection courante</button>
+  <textarea id="testOutput" readonly rows="14" style="width:100%; font-family:monospace; box-sizing:border-box; margin-top:6px;"
+    placeholder="Le résultat JSON brut apparaîtra ici."></textarea>
+
   <div id="status">Connexion à Trimble Connect...</div>
 
   <table id="preview">
@@ -292,6 +299,45 @@ btnClearTrimble.onclick = async () => {
     setStatus(msg);
   } catch (e) {
     setStatus("Erreur lors de la suppression des points : " + e.message);
+  }
+};
+
+const btnTestSelection = document.getElementById('btnTestSelection');
+btnTestSelection.onclick = async () => {
+  // Bouton de diagnostic TEMPORAIRE : on affiche le JSON brut plutôt que de
+  // présumer la forme exacte de getSelection(), pour valider ensemble ce que
+  // l'API renvoie réellement sur un vrai élément IFC (issu de Tekla) avant de
+  // construire la chaîne d'extraction automatique des points théoriques.
+  const outputBox = document.getElementById('testOutput');
+  if (!API) { setStatus("API non connectée."); return; }
+  let output = '';
+  try {
+    const selection = await API.viewer.getSelection();
+    output += "=== getSelection() ===\n" + JSON.stringify(selection, null, 2) + "\n\n";
+
+    // On tente d'exploiter la sélection pour interroger les propriétés, sans
+    // présumer à 100% de sa forme exacte (le JSON brut ci-dessus fait foi).
+    const entries = Array.isArray(selection) ? selection : [selection];
+    for (const entry of entries) {
+      const modelId = entry && entry.modelId;
+      const ids = entry && entry.objectRuntimeIds;
+      if (!modelId || !ids || ids.length === 0) continue;
+
+      const props = await API.viewer.getObjectProperties(modelId, ids);
+      output += `=== getObjectProperties("${modelId}") ===\n` + JSON.stringify(props, null, 2) + "\n\n";
+
+      const boxes = await API.viewer.getObjectBoundingBoxes(modelId, ids);
+      output += `=== getObjectBoundingBoxes("${modelId}") ===\n` + JSON.stringify(boxes, null, 2) + "\n\n";
+    }
+
+    if (!output.includes('getObjectProperties')) {
+      output += "(Aucun élément exploitable trouvé dans la sélection — as-tu bien cliqué sur un élément de la maquette avant de tester ?)";
+    }
+    outputBox.value = output;
+    setStatus("Résultat affiché ci-dessous — copie-le pour qu'on l'analyse ensemble.");
+  } catch (e) {
+    outputBox.value = output + "\n\nERREUR : " + e.message;
+    setStatus("Erreur pendant le test : " + e.message);
   }
 };
 
