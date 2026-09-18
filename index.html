@@ -19,12 +19,8 @@
 <body>
   <h3>Export des points → CAO</h3>
 
-  <label>Port local de l'application Python :
-    <input id="port" type="number" value="8756" />
-  </label>
-
   <button id="btnFetch">1. Récupérer les points de la maquette</button><br/>
-  <button id="btnSend" disabled>2. Envoyer vers l'application locale</button>
+  <button id="btnSend" disabled>2. Exporter en .txt (ID_Point X Y Z)</button>
   <button id="btnCopy" disabled>3. Copier les points (presse-papiers)</button><br/>
   <button id="btnClearTrimble" disabled>Vider les points sélectionnés dans Trimble Connect</button>
 
@@ -48,16 +44,22 @@
 // -> La conversion mm -> m est donc systématique (division par 1000),
 //    aucune détection heuristique de l'unité n'est nécessaire ici.
 //
-// À PROPOS DE L'ENVOI AUTOMATIQUE (bouton "2. Envoyer...") :
-// Confirmé en usage réel : fonctionne sur Firefox, bloqué sur Chrome/Edge 142+
-// par la restriction "Local Network Access" du navigateur (l'iframe de
-// l'extension n'a pas l'attribut allow="local-network-access", posé par
-// Trimble Connect, pas par nous). Réf. : https://developer.chrome.com/blog/local-network-access
-// -> "3. Copier les points" reste le filet de sécurité sur Chrome/Edge.
-// Note : depuis le retrait de la zone de texte manuelle (sur demande), si
-// "Copier" échoue un jour aussi (permissions clipboard de l'iframe), il n'y
-// a plus de solution de repli DANS l'extension — seule l'appli Python reste
-// utilisable via un nouvel export.
+// À PROPOS DU BOUTON "2. Exporter en .txt" :
+// Génération et téléchargement du fichier ENTIÈREMENT côté navigateur
+// (Blob + lien <a download>), sans aucun appel réseau. Ce choix évite
+// délibérément l'écueil rencontré avec une première version qui envoyait les
+// points à une application locale via localhost : cette approche-là se
+// heurtait à la restriction "Local Network Access" de Chrome/Edge (bloquée
+// sauf si la page hôte, ici Trimble Connect, ajoute l'attribut
+// allow="local-network-access" sur l'iframe — hors de notre contrôle).
+// Réf. : https://developer.chrome.com/blog/local-network-access
+// Le téléchargement de fichier ne passe par aucun de ces mécanismes réseau :
+// c'est une fonctionnalité native et ancienne du navigateur. Seul point non
+// garanti à 100 % sans test : un attribut sandbox restrictif sans
+// allow-downloads sur l'iframe de l'extension bloquerait le téléchargement —
+// peu probable ici (l'extension communique déjà librement avec
+// window.parent), mais "3. Copier les points" reste le filet de sécurité si
+// jamais ce cas se présentait.
 //
 // BOUTON "Vider les points sélectionnés dans Trimble Connect" :
 // Supprime de la maquette uniquement les points récupérés à l'étape 1 (via
@@ -108,7 +110,7 @@ btnFetch.onclick = async () => {
       btnCopy.disabled = true;
       btnClearTrimble.disabled = true;
     } else {
-      setStatus(currentPoints.length + " point(s) trouvé(s). Utilise \"2. Envoyer\" ou \"3. Copier les points\".");
+      setStatus(currentPoints.length + " point(s) trouvé(s). Utilise \"2. Exporter\" ou \"3. Copier les points\".");
       btnSend.disabled = false;
       btnCopy.disabled = false;
       btnClearTrimble.disabled = false;
@@ -137,20 +139,34 @@ function formatLinesInMeters() {
   }).join('\n');
 }
 
-btnSend.onclick = async () => {
-  const port = document.getElementById('port').value || 8756;
+function downloadTextFile(filename, content) {
+  // Génère et télécharge un fichier texte entièrement côté navigateur,
+  // sans aucun appel réseau (voir commentaire en tête de fichier).
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+btnSend.onclick = () => {
+  if (currentPoints.length === 0) {
+    setStatus("Aucun point à exporter (clique d'abord sur \"1. Récupérer les points\").");
+    return;
+  }
+  const content = formatLinesInMeters() + '\n';
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const filename = `points_trimble_${stamp}.txt`;
   try {
-    const resp = await fetch(`http://localhost:${port}/points`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ points: currentPoints, unit: 'mm', source: 'trimble-connect-extension' })
-    });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    setStatus(currentPoints.length + " point(s) envoyé(s) à l'application locale.\nVérifie la fenêtre Python.");
+    downloadTextFile(filename, content);
+    setStatus(currentPoints.length + " point(s) exporté(s) dans \"" + filename + "\" " +
+      "(dossier Téléchargements du navigateur).");
   } catch (e) {
-    setStatus("Envoi automatique indisponible (" + e.message + ").\n" +
-      "C'est attendu sur Chrome/Edge récents (restriction \"Local Network Access\" du navigateur, " +
-      "hors de notre contrôle) — utilise \"3. Copier les points\", c'est le filet de sécurité.");
+    setStatus("Échec de l'export (" + e.message + "). Utilise \"3. Copier les points\" en secours.");
   }
 };
 
@@ -163,7 +179,7 @@ btnCopy.onclick = async () => {
       "Colle-le dans l'application Python (bouton \"Coller depuis le presse-papiers\").");
   } catch (e) {
     setStatus("Copie automatique impossible (" + e.message + ").\n" +
-      "Aucun autre filet de sécurité n'est disponible ici — réessaie sur Firefox si besoin.");
+      "Utilise \"2. Exporter en .txt\" à la place, qui ne dépend d'aucune permission du navigateur.");
   }
 };
 
