@@ -354,28 +354,41 @@ const btnTestColumns = document.getElementById('btnTestColumns');
 btnTestColumns.onclick = async () => {
   // Test TEMPORAIRE : getObjects({ parameter: { class: 'IFCCOLUMN' } })
   // Réf. champ "class" : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/EntityParameter.html
-  // Valeur "IFCCOLUMN" observée empiriquement sur un poteau réel (voir test précédent),
-  // pas supposée depuis la doc générique (qui écrit plutôt "IfcColumn").
+  // Valeur "IFCCOLUMN" observée empiriquement sur un poteau réel (test précédent).
+  //
+  // IMPORTANT (constaté empiriquement) : getObjects() avec un filtre ne renvoie
+  // que les identifiants des objets (léger, pensé pour de gros volumes), PAS
+  // leur position ni leurs propriétés (elles reviennent "undefined"). Il faut
+  // enchaîner avec getObjectProperties(modelId, ids) sur ces mêmes id pour
+  // obtenir le détail complet — même principe en deux temps que pour un objet
+  // sélectionné manuellement.
   const outputBox = document.getElementById('testOutput');
   if (!API) { setStatus("API non connectée."); return; }
   try {
     const result = await API.viewer.getObjects({ parameter: { class: 'IFCCOLUMN' } });
     let output = "=== getObjects({ parameter: { class: 'IFCCOLUMN' } }) ===\n";
     let total = 0;
-    (result || []).forEach(modelEntry => {
-      const objs = modelEntry.objects || [];
-      total += objs.length;
-      output += `\nModèle "${modelEntry.modelId}" : ${objs.length} colonne(s) trouvée(s)\n`;
-      objs.slice(0, 5).forEach(o => {
-        const flatProps = (o.properties || []).flatMap(ps => ps.properties || []);
-        const ref = flatProps.find(p => p.name === 'Reference');
-        output += `  - id ${o.id} | position ${stringifySafe(o.position)} | Reference=${ref ? ref.value : '(absent)'}\n`;
-      });
-      if (objs.length > 5) output += `  ... (${objs.length - 5} de plus, non affichées ici)\n`;
-    });
+
+    for (const modelEntry of (result || [])) {
+      const ids = (modelEntry.objects || []).map(o => o.id);
+      total += ids.length;
+      output += `\nModèle "${modelEntry.modelId}" : ${ids.length} colonne(s) trouvée(s) (id seul à ce stade)\n`;
+
+      if (ids.length > 0) {
+        const details = await API.viewer.getObjectProperties(modelEntry.modelId, ids);
+        output += `\n=== getObjectProperties("${modelEntry.modelId}") sur ces ${ids.length} colonnes ===\n`;
+        details.slice(0, 5).forEach(o => {
+          const flatProps = (o.properties || []).flatMap(ps => ps.properties || []);
+          const ref = flatProps.find(p => p.name === 'Reference');
+          output += `  - id ${o.id} | position ${stringifySafe(o.position)} | Reference=${ref ? ref.value : '(absent)'}\n`;
+        });
+        if (details.length > 5) output += `  ... (${details.length - 5} de plus, non affichées ici)\n`;
+      }
+    }
+
     output += `\nTOTAL : ${total} colonne(s) sur ${(result || []).length} modèle(s).`;
     outputBox.value = output;
-    setStatus(total + " colonne(s) trouvée(s) via le filtre de classe.");
+    setStatus(total + " colonne(s) trouvée(s), détail récupéré via getObjectProperties.");
   } catch (e) {
     outputBox.value = "ERREUR : " + e.message;
     setStatus("Erreur pendant le test : " + e.message);
