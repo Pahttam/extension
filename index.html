@@ -28,10 +28,10 @@
   <button id="btnClearTrimble" disabled>Vider les points sélectionnés dans Trimble Connect</button>
 
   <hr/>
-  <p><strong>Zone de test temporaire</strong> — sélectionne un élément (poteau, poutre...)
-    directement dans le viewer 3D (clic normal, pas l'outil "Point unique"), puis clique ici :</p>
-  <button id="btnTestSelection">Tester : inspecter la sélection courante</button>
-  <button id="btnTestColumns">Tester : lister toutes les colonnes (IFCCOLUMN)</button>
+  <p><strong>Extraction automatique depuis l'IFC</strong> — aucune sélection manuelle nécessaire,
+    ces boutons interrogent directement toute la maquette :</p>
+  <button id="btnListColumns">Lister toutes les colonnes</button>
+  <button id="btnListBeams">Lister toutes les poutres</button>
   <textarea id="testOutput" readonly rows="14" style="width:100%; font-family:monospace; box-sizing:border-box; margin-top:6px;"
     placeholder="Le résultat JSON brut apparaîtra ici."></textarea>
 
@@ -303,8 +303,6 @@ btnClearTrimble.onclick = async () => {
   }
 };
 
-const btnTestSelection = document.getElementById('btnTestSelection');
-
 function stringifySafe(obj) {
   // JSON.stringify plante nativement sur un BigInt ("Do not know how to
   // serialize a BigInt") : on le convertit en chaîne lisible pour le
@@ -312,88 +310,74 @@ function stringifySafe(obj) {
   return JSON.stringify(obj, (key, value) => (typeof value === 'bigint' ? value.toString() + 'n' : value), 2);
 }
 
-btnTestSelection.onclick = async () => {
-  // Bouton de diagnostic TEMPORAIRE : on affiche le JSON brut plutôt que de
-  // présumer la forme exacte de getSelection(), pour valider ensemble ce que
-  // l'API renvoie réellement sur un vrai élément IFC (issu de Tekla) avant de
-  // construire la chaîne d'extraction automatique des points théoriques.
-  const outputBox = document.getElementById('testOutput');
-  if (!API) { setStatus("API non connectée."); return; }
-  let output = '';
-  try {
-    const selection = await API.viewer.getSelection();
-    output += "=== getSelection() ===\n" + stringifySafe(selection) + "\n\n";
-
-    // On tente d'exploiter la sélection pour interroger les propriétés, sans
-    // présumer à 100% de sa forme exacte (le JSON brut ci-dessus fait foi).
-    const entries = Array.isArray(selection) ? selection : [selection];
-    for (const entry of entries) {
-      const modelId = entry && entry.modelId;
-      const ids = entry && entry.objectRuntimeIds;
-      if (!modelId || !ids || ids.length === 0) continue;
-
-      const props = await API.viewer.getObjectProperties(modelId, ids);
-      output += `=== getObjectProperties("${modelId}") ===\n` + stringifySafe(props) + "\n\n";
-
-      const boxes = await API.viewer.getObjectBoundingBoxes(modelId, ids);
-      output += `=== getObjectBoundingBoxes("${modelId}") ===\n` + stringifySafe(boxes) + "\n\n";
-    }
-
-    if (!output.includes('getObjectProperties')) {
-      output += "(Aucun élément exploitable trouvé dans la sélection — as-tu bien cliqué sur un élément de la maquette avant de tester ?)";
-    }
-    outputBox.value = output;
-    setStatus("Résultat affiché ci-dessous — copie-le pour qu'on l'analyse ensemble.");
-  } catch (e) {
-    outputBox.value = output + "\n\nERREUR : " + e.message;
-    setStatus("Erreur pendant le test : " + e.message);
-  }
-};
-
-const btnTestColumns = document.getElementById('btnTestColumns');
-btnTestColumns.onclick = async () => {
-  // Test TEMPORAIRE : getObjects({ parameter: { class: 'IFCCOLUMN' } })
-  // Réf. champ "class" : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/EntityParameter.html
-  // Valeur "IFCCOLUMN" observée empiriquement sur un poteau réel (test précédent).
+async function listElementsByClass(ifcClass) {
+  // Réf. champ "class" du filtre : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/EntityParameter.html
+  // Valeur "IFCCOLUMN" observée empiriquement sur un poteau réel (Tekla exporte
+  // en majuscules, contrairement à la casse "IfcColumn" de la doc générique).
+  // "IFCBEAM" pour les poutres est une extrapolation par analogie, PAS encore
+  // vérifiée empiriquement : si le bouton "Lister toutes les poutres" renvoie
+  // 0 résultat alors que la maquette en contient, c'est le premier point à
+  // remettre en cause.
   //
   // IMPORTANT (constaté empiriquement) : getObjects() avec un filtre ne renvoie
   // que les identifiants des objets (léger, pensé pour de gros volumes), PAS
   // leur position ni leurs propriétés (elles reviennent "undefined"). Il faut
   // enchaîner avec getObjectProperties(modelId, ids) sur ces mêmes id pour
-  // obtenir le détail complet — même principe en deux temps que pour un objet
-  // sélectionné manuellement.
+  // obtenir le détail complet.
+  //
+  // convertToObjectIds(modelId, ids) donne le GUID IFC réel (obligatoire par la
+  // norme), plus fiable que le champ Tekla "Initial GUID" vu vide sur un test
+  // précédent. Attention : documenté comme levant une exception si NE SERAIT-CE
+  // QU'UN SEUL id du lot n'a pas de GUID correspondant — dans ce cas, on n'a
+  // aucun GUID pour tout le lot, pas seulement pour l'élément fautif.
   const outputBox = document.getElementById('testOutput');
   if (!API) { setStatus("API non connectée."); return; }
   try {
-    const result = await API.viewer.getObjects({ parameter: { class: 'IFCCOLUMN' } });
-    let output = "=== getObjects({ parameter: { class: 'IFCCOLUMN' } }) ===\n";
+    const result = await API.viewer.getObjects({ parameter: { class: ifcClass } });
+    let output = `=== getObjects({ parameter: { class: '${ifcClass}' } }) ===\n`;
     let total = 0;
 
     for (const modelEntry of (result || [])) {
       const ids = (modelEntry.objects || []).map(o => o.id);
       total += ids.length;
-      output += `\nModèle "${modelEntry.modelId}" : ${ids.length} colonne(s) trouvée(s) (id seul à ce stade)\n`;
+      output += `\nModèle "${modelEntry.modelId}" : ${ids.length} élément(s) trouvé(s) (id seul à ce stade)\n`;
+      if (ids.length === 0) continue;
 
-      if (ids.length > 0) {
-        const details = await API.viewer.getObjectProperties(modelEntry.modelId, ids);
-        output += `\n=== getObjectProperties("${modelEntry.modelId}") sur ces ${ids.length} colonnes ===\n`;
-        details.slice(0, 5).forEach(o => {
-          const flatProps = (o.properties || []).flatMap(ps => ps.properties || []);
-          const ref = flatProps.find(p => p.name === 'Reference');
-          output += `  - id ${o.id} | position ${stringifySafe(o.position)} | Reference=${ref ? ref.value : '(absent)'}\n`;
-        });
-        if (details.length > 5) output += `  ... (${details.length - 5} de plus, non affichées ici)\n`;
+      const details = await API.viewer.getObjectProperties(modelEntry.modelId, ids);
+
+      let guids = null;
+      let guidError = null;
+      try {
+        guids = await API.viewer.convertToObjectIds(modelEntry.modelId, ids);
+      } catch (e) {
+        guidError = e.message;
+      }
+
+      output += `\n=== getObjectProperties("${modelEntry.modelId}") + convertToObjectIds sur ces ${ids.length} élément(s) ===\n`;
+      details.slice(0, 5).forEach(o => {
+        const flatProps = (o.properties || []).flatMap(ps => ps.properties || []);
+        const ref = flatProps.find(p => p.name === 'Reference');
+        const guid = guids ? guids[ids.indexOf(o.id)] : '(indisponible pour ce lot)';
+        output += `  - id ${o.id} | position ${stringifySafe(o.position)} | Reference=${ref ? ref.value : '(absent)'} | GUID=${guid}\n`;
+      });
+      if (details.length > 5) output += `  ... (${details.length - 5} de plus, non affichées ici)\n`;
+      if (guidError) {
+        output += `  ATTENTION : convertToObjectIds a échoué pour ce lot (${guidError}) — au moins un ` +
+          `élément du lot n'a pas de GUID externe ; aucun GUID n'a donc pu être obtenu pour ce lot entier.\n`;
       }
     }
 
-    output += `\nTOTAL : ${total} colonne(s) sur ${(result || []).length} modèle(s).`;
+    output += `\nTOTAL : ${total} élément(s) de classe "${ifcClass}".`;
     outputBox.value = output;
-    setStatus(total + " colonne(s) trouvée(s), détail récupéré via getObjectProperties.");
+    setStatus(total + ` élément(s) "${ifcClass}" trouvé(s).`);
   } catch (e) {
     outputBox.value = "ERREUR : " + e.message;
     setStatus("Erreur pendant le test : " + e.message);
   }
-};
+}
+
+document.getElementById('btnListColumns').onclick = () => listElementsByClass('IFCCOLUMN');
+document.getElementById('btnListBeams').onclick = () => listElementsByClass('IFCBEAM');
 
 init();
 </script>
