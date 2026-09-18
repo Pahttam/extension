@@ -22,6 +22,9 @@
   <button id="btnFetch">1. Récupérer les points de la maquette</button><br/>
   <button id="btnSend" disabled>2. Exporter en .txt (ID_Point X Y Z)</button>
   <button id="btnCopy" disabled>3. Copier les points (presse-papiers)</button><br/>
+  <button id="btnImport">Importer un fichier de points (.txt) sur la maquette</button>
+  <input type="file" id="fileInput" accept=".txt,.csv" style="display:none" />
+  <br/>
   <button id="btnClearTrimble" disabled>Vider les points sélectionnés dans Trimble Connect</button>
 
   <div id="status">Connexion à Trimble Connect...</div>
@@ -61,6 +64,25 @@
 // window.parent), mais "3. Copier les points" reste le filet de sécurité si
 // jamais ce cas se présentait.
 //
+// BOUTON "Importer un fichier de points (.txt) sur la maquette" :
+// Lecture du fichier ENTIÈREMENT côté navigateur (input file natif), même
+// principe de fiabilité que l'export : aucun serveur, aucun réseau. Format
+// attendu : une ligne par point "Nom X Y Z" (espaces, coordonnées en mètres,
+// identique au format d'export). Conversion m -> mm à l'envoi (API en mm,
+// voir plus haut).
+// Réf. addSinglePointMarkups : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/MarkupAPI.html#addSinglePointMarkups
+// Réf. champs MarkupPick (positionX/Y/Z obligatoires, modelId/objectId
+// optionnels donc un point "libre" est possible) :
+// https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/MarkupPick.html
+// LIMITE CONNUE : PointMarkup n'expose pas de champ "nom" — le nom (colonne 1
+// du fichier) sert uniquement à l'identification côté fichier source ; une
+// fois posé, le point n'affiche que ses coordonnées dans Trimble Connect,
+// comme un point cliqué manuellement.
+// PAS ENCORE FAIT : couleur distincte pour les points importés — le format
+// exact attendu par ColorRGBA (échelle 0-1 ou 0-255) n'a pas été confirmé
+// avec une source fiable ; à vérifier ensemble avant de l'ajouter plutôt que
+// de deviner sur un appel qui pourrait échouer.
+//
 // BOUTON "Vider les points sélectionnés dans Trimble Connect" :
 // Supprime de la maquette uniquement les points récupérés à l'étape 1 (via
 // leurs id individuels). Ne jamais appeler API.markup.removeMarkups(undefined) :
@@ -75,6 +97,8 @@ const statusEl = document.getElementById('status');
 const btnFetch = document.getElementById('btnFetch');
 const btnSend = document.getElementById('btnSend');
 const btnCopy = document.getElementById('btnCopy');
+const btnImport = document.getElementById('btnImport');
+const fileInput = document.getElementById('fileInput');
 const btnClearTrimble = document.getElementById('btnClearTrimble');
 const previewBody = document.querySelector('#preview tbody');
 
@@ -180,6 +204,64 @@ btnCopy.onclick = async () => {
   } catch (e) {
     setStatus("Copie automatique impossible (" + e.message + ").\n" +
       "Utilise \"2. Exporter en .txt\" à la place, qui ne dépend d'aucune permission du navigateur.");
+  }
+};
+
+function parsePointsFile(text) {
+  // Format attendu, identique à l'export : "Nom X Y Z" (espaces, mètres).
+  const markups = [];
+  let skipped = 0;
+  text.split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return; // ligne vide : ignorée silencieusement
+    const parts = trimmed.split(/\s+/);
+    if (parts.length !== 4) { skipped++; return; }
+    const [, xs, ys, zs] = parts; // le nom (parts[0]) n'est pas exploitable côté Trimble Connect (voir limite en tête de fichier)
+    const x = parseFloat(xs), y = parseFloat(ys), z = parseFloat(zs);
+    if ([x, y, z].some(v => Number.isNaN(v))) { skipped++; return; }
+    markups.push({
+      start: {
+        // Conversion m -> mm : l'API attend des millimètres (voir commentaire en tête de fichier).
+        positionX: x * 1000,
+        positionY: y * 1000,
+        positionZ: z * 1000,
+      }
+    });
+  });
+  return { markups, skipped };
+}
+
+btnImport.onclick = () => fileInput.click();
+
+fileInput.onchange = async () => {
+  const file = fileInput.files[0];
+  fileInput.value = ''; // permet de resélectionner le même fichier plus tard
+  if (!file) return;
+  if (!API) { setStatus("API non connectée."); return; }
+
+  let text;
+  try {
+    text = await file.text();
+  } catch (e) {
+    setStatus("Impossible de lire le fichier (" + e.message + ").");
+    return;
+  }
+
+  const { markups, skipped } = parsePointsFile(text);
+  if (markups.length === 0) {
+    setStatus("Aucune ligne valide trouvée (format attendu : \"Nom X Y Z\", en mètres).");
+    return;
+  }
+
+  try {
+    const added = await API.markup.addSinglePointMarkups(markups);
+    let msg = added.length + " point(s) importé(s) et posé(s) sur la maquette.";
+    if (skipped > 0) {
+      msg += "\n" + skipped + " ligne(s) ignorée(s) (format invalide).";
+    }
+    setStatus(msg);
+  } catch (e) {
+    setStatus("Erreur lors de l'ajout des points sur la maquette : " + e.message);
   }
 };
 
