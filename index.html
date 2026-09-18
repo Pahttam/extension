@@ -31,6 +31,7 @@
   <p><strong>Zone de test temporaire</strong> — sélectionne un élément (poteau, poutre...)
     directement dans le viewer 3D (clic normal, pas l'outil "Point unique"), puis clique ici :</p>
   <button id="btnTestSelection">Tester : inspecter la sélection courante</button>
+  <button id="btnTestColumns">Tester : lister toutes les colonnes (IFCCOLUMN)</button>
   <textarea id="testOutput" readonly rows="14" style="width:100%; font-family:monospace; box-sizing:border-box; margin-top:6px;"
     placeholder="Le résultat JSON brut apparaîtra ici."></textarea>
 
@@ -345,6 +346,38 @@ btnTestSelection.onclick = async () => {
     setStatus("Résultat affiché ci-dessous — copie-le pour qu'on l'analyse ensemble.");
   } catch (e) {
     outputBox.value = output + "\n\nERREUR : " + e.message;
+    setStatus("Erreur pendant le test : " + e.message);
+  }
+};
+
+const btnTestColumns = document.getElementById('btnTestColumns');
+btnTestColumns.onclick = async () => {
+  // Test TEMPORAIRE : getObjects({ parameter: { class: 'IFCCOLUMN' } })
+  // Réf. champ "class" : https://components.connect.trimble.com/trimble-connect-workspace-api/interfaces/EntityParameter.html
+  // Valeur "IFCCOLUMN" observée empiriquement sur un poteau réel (voir test précédent),
+  // pas supposée depuis la doc générique (qui écrit plutôt "IfcColumn").
+  const outputBox = document.getElementById('testOutput');
+  if (!API) { setStatus("API non connectée."); return; }
+  try {
+    const result = await API.viewer.getObjects({ parameter: { class: 'IFCCOLUMN' } });
+    let output = "=== getObjects({ parameter: { class: 'IFCCOLUMN' } }) ===\n";
+    let total = 0;
+    (result || []).forEach(modelEntry => {
+      const objs = modelEntry.objects || [];
+      total += objs.length;
+      output += `\nModèle "${modelEntry.modelId}" : ${objs.length} colonne(s) trouvée(s)\n`;
+      objs.slice(0, 5).forEach(o => {
+        const flatProps = (o.properties || []).flatMap(ps => ps.properties || []);
+        const ref = flatProps.find(p => p.name === 'Reference');
+        output += `  - id ${o.id} | position ${stringifySafe(o.position)} | Reference=${ref ? ref.value : '(absent)'}\n`;
+      });
+      if (objs.length > 5) output += `  ... (${objs.length - 5} de plus, non affichées ici)\n`;
+    });
+    output += `\nTOTAL : ${total} colonne(s) sur ${(result || []).length} modèle(s).`;
+    outputBox.value = output;
+    setStatus(total + " colonne(s) trouvée(s) via le filtre de classe.");
+  } catch (e) {
+    outputBox.value = "ERREUR : " + e.message;
     setStatus("Erreur pendant le test : " + e.message);
   }
 };
